@@ -58,6 +58,8 @@ class ModelStatusCard extends StatelessWidget {
             _ModelItemTile(
               language: TargetLanguage.thai,
               state: modelStatus.jaToThState,
+              progress: modelStatus.progressForLanguage(TargetLanguage.thai),
+              stageText: modelStatus.stageForLanguage(TargetLanguage.thai),
               isSelectedTarget: selectedLanguage == TargetLanguage.thai,
               onDownload: () => onDownloadModel(TargetLanguage.thai),
             ),
@@ -65,6 +67,8 @@ class ModelStatusCard extends StatelessWidget {
             _ModelItemTile(
               language: TargetLanguage.english,
               state: modelStatus.jaToEnState,
+              progress: modelStatus.progressForLanguage(TargetLanguage.english),
+              stageText: modelStatus.stageForLanguage(TargetLanguage.english),
               isSelectedTarget: selectedLanguage == TargetLanguage.english,
               onDownload: () => onDownloadModel(TargetLanguage.english),
             ),
@@ -115,12 +119,16 @@ class ModelStatusCard extends StatelessWidget {
 class _ModelItemTile extends StatelessWidget {
   final TargetLanguage language;
   final ModelDownloadState state;
+  final int progress;
+  final String? stageText;
   final bool isSelectedTarget;
   final VoidCallback onDownload;
 
   const _ModelItemTile({
     required this.language,
     required this.state,
+    required this.progress,
+    this.stageText,
     required this.isSelectedTarget,
     required this.onDownload,
   });
@@ -146,6 +154,13 @@ class _ModelItemTile extends StatelessWidget {
       ),
     };
 
+    final statusDisplayText = switch (state) {
+      ModelDownloadState.downloading => 'กำลังดาวน์โหลด $progress%',
+      ModelDownloadState.downloaded => 'พร้อมใช้งาน (100%)',
+      ModelDownloadState.failed => 'ดาวน์โหลดไม่สำเร็จ (Failed)',
+      ModelDownloadState.notDownloaded => 'ยังไม่ได้ดาวน์โหลด (Not Downloaded)',
+    };
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -159,76 +174,140 @@ class _ModelItemTile extends StatelessWidget {
               : const Color(0xFF334155),
         ),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      language.modelTitle,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13.5,
-                      ),
-                    ),
-                    if (isSelectedTarget) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF6366F1).withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Text(
-                          'Active Target',
-                          style: TextStyle(
-                            fontSize: 10.5,
+                    Row(
+                      children: [
+                        Text(
+                          language.modelTitle,
+                          style: const TextStyle(
                             fontWeight: FontWeight.w600,
-                            color: Color(0xFFC7D2FE),
+                            fontSize: 13.5,
                           ),
+                        ),
+                        if (isSelectedTarget) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              'Active Target',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFFC7D2FE),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Row(
+                      children: [
+                        Icon(badgeIcon, size: 14, color: badgeColor),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            statusDisplayText,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: badgeColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (state == ModelDownloadState.downloading &&
+                        stageText != null &&
+                        stageText!.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        stageText!,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF94A3B8),
                         ),
                       ),
                     ],
                   ],
                 ),
-                const SizedBox(height: 5),
-                Row(
-                  children: [
-                    Icon(badgeIcon, size: 14, color: badgeColor),
-                    const SizedBox(width: 5),
-                    Text(
-                      state.displayLabel,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: badgeColor,
-                      ),
+              ),
+              if (state == ModelDownloadState.downloading)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(99),
+                    border: Border.all(
+                      color: const Color(0xFF38BDF8).withValues(alpha: 0.4),
                     ),
-                  ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          value: progress > 0 ? progress / 100.0 : null,
+                          strokeWidth: 2.2,
+                          color: const Color(0xFF38BDF8),
+                        ),
+                      ),
+                      const SizedBox(width: 7),
+                      Text(
+                        '$progress%',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF38BDF8),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else if (state != ModelDownloadState.downloaded)
+                FilledButton.tonalIcon(
+                  onPressed: onDownload,
+                  icon: const Icon(Icons.download_rounded, size: 17),
+                  label: Text(
+                    state == ModelDownloadState.failed ? 'Retry' : 'Download',
+                  ),
                 ),
-              ],
-            ),
+            ],
           ),
-          if (state == ModelDownloadState.downloading)
-            const SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(strokeWidth: 2.4),
-            )
-          else if (state != ModelDownloadState.downloaded)
-            FilledButton.tonalIcon(
-              onPressed: onDownload,
-              icon: const Icon(Icons.download_rounded, size: 17),
-              label: Text(
-                state == ModelDownloadState.failed ? 'Retry' : 'Download',
+          if (state == ModelDownloadState.downloading) ...[
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(99),
+              child: LinearProgressIndicator(
+                value: progress > 0 ? (progress / 100.0).clamp(0.0, 1.0) : null,
+                minHeight: 6,
+                backgroundColor: const Color(0xFF1E293B),
+                valueColor: const AlwaysStoppedAnimation<Color>(
+                  Color(0xFF38BDF8),
+                ),
               ),
             ),
+          ],
         ],
       ),
     );

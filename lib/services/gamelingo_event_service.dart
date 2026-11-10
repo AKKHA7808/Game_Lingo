@@ -13,6 +13,7 @@ enum GameLingoEventType {
   translationCompleted,
   translationFailed,
   captureStopped,
+  modelDownloadProgress,
   unknown;
 
   static GameLingoEventType fromString(String? name) {
@@ -37,6 +38,8 @@ enum GameLingoEventType {
         return GameLingoEventType.translationFailed;
       case 'captureStopped':
         return GameLingoEventType.captureStopped;
+      case 'modelDownloadProgress':
+        return GameLingoEventType.modelDownloadProgress;
       default:
         return GameLingoEventType.unknown;
     }

@@ -151,22 +151,42 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<void> downloadModel(TargetLanguage language) async {
     clearMessages();
-    _updateSingleModelState(language, ModelDownloadState.downloading);
+    _updateSingleModelState(
+      language,
+      ModelDownloadState.downloading,
+      progress: 2,
+      stage: 'กำลังเริ่มต้นดาวน์โหลด...',
+    );
     try {
       final success = await _channel.downloadTranslationModel(
         language,
         allowCellular: _allowCellularDownload,
       );
       if (success) {
-        _updateSingleModelState(language, ModelDownloadState.downloaded);
-        _statusMessage = 'ดาวน์โหลด ${language.modelTitle} สำเร็จแล้ว';
+        _updateSingleModelState(
+          language,
+          ModelDownloadState.downloaded,
+          progress: 100,
+          stage: 'พร้อมใช้งาน (100%)',
+        );
+        _statusMessage = 'ดาวน์โหลด ${language.modelTitle} สำเร็จแล้ว (100%)';
         await refreshModelStatus();
       } else {
-        _updateSingleModelState(language, ModelDownloadState.failed);
+        _updateSingleModelState(
+          language,
+          ModelDownloadState.failed,
+          progress: 0,
+          stage: 'ดาวน์โหลดไม่สำเร็จ',
+        );
         _errorMessage = 'ไม่สามารถดาวน์โหลด ${language.modelTitle} ได้';
       }
     } on GameLingoNativeException catch (e) {
-      _updateSingleModelState(language, ModelDownloadState.failed);
+      _updateSingleModelState(
+        language,
+        ModelDownloadState.failed,
+        progress: 0,
+        stage: 'ดาวน์โหลดล้มเหลว',
+      );
       _errorMessage = e.message;
     }
     notifyListeners();
@@ -174,16 +194,22 @@ class AppStateProvider extends ChangeNotifier {
 
   void _updateSingleModelState(
     TargetLanguage language,
-    ModelDownloadState state,
-  ) {
+    ModelDownloadState state, {
+    int? progress,
+    String? stage,
+  }) {
     if (language == TargetLanguage.thai) {
       _modelStatus = _modelStatus.copyWith(
         jaToThState: state,
+        jaToThProgress: progress,
+        jaToThStage: stage,
         clearError: state != ModelDownloadState.failed,
       );
     } else {
       _modelStatus = _modelStatus.copyWith(
         jaToEnState: state,
+        jaToEnProgress: progress,
+        jaToEnStage: stage,
         clearError: state != ModelDownloadState.failed,
       );
     }
@@ -302,6 +328,7 @@ class AppStateProvider extends ChangeNotifier {
       case GameLingoEventType.permissionStatusChanged:
         _permissionStatus = PermissionStatusModel.fromMap(event.data);
         _isScreenCaptureActive = _permissionStatus.isScreenCaptureGranted;
+        unawaited(refreshModelStatus());
         break;
       case GameLingoEventType.bubbleStatusChanged:
         _isBubbleRunning = (event.data['isRunning'] as bool?) ?? false;
@@ -372,6 +399,27 @@ class AppStateProvider extends ChangeNotifier {
           screenCapturePermission: PermissionGrantState.actionRequired,
         );
         _statusMessage = 'เซสชันการจับภาพหน้าจอสิ้นสุดลง';
+        break;
+      case GameLingoEventType.modelDownloadProgress:
+        final langCode = (event.data['targetLanguage'] as String?) ?? 'th';
+        final targetLang = TargetLanguage.fromCode(langCode);
+        final progress = (event.data['progress'] as int?) ?? 0;
+        final stateStr = (event.data['state'] as String?) ?? 'downloading';
+        final stageMsg = event.data['stageMessage'] as String?;
+        final state = ModelDownloadState.fromString(stateStr);
+
+        _updateSingleModelState(
+          targetLang,
+          state,
+          progress: progress,
+          stage: stageMsg,
+        );
+        if (state == ModelDownloadState.downloading) {
+          _statusMessage =
+              '${stageMsg ?? "กำลังดาวน์โหลด ${targetLang.modelTitle}"} ($progress%)';
+        } else if (state == ModelDownloadState.downloaded) {
+          _statusMessage = 'ดาวน์โหลด ${targetLang.modelTitle} สำเร็จ (100%)';
+        }
         break;
       case GameLingoEventType.unknown:
         break;

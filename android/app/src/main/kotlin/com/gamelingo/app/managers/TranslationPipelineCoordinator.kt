@@ -215,10 +215,14 @@ object TranslationPipelineCoordinator {
     }
 
     /**
-     * Releases ML Kit OCR and Translation native resources when all GameLingo services are stopped.
+     * Releases ML Kit OCR and Translation native resources when all GameLingo services
+     * and background model downloads are stopped.
      */
     fun releaseResourcesIfIdle() {
-        if (!FloatingBubbleService.isRunning && !MediaProjectionService.isCaptureSessionActive) {
+        if (!FloatingBubbleService.isRunning &&
+            !MediaProjectionService.isCaptureSessionActive &&
+            !translationManager.isDownloadingAnyModel
+        ) {
             japaneseOcrManager.close()
             translationManager.close()
         }

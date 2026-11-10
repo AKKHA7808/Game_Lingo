@@ -69,11 +69,38 @@ void main() {
     test('parses TranslationModelStatus and checks language readiness', () {
       final status = TranslationModelStatus.fromMap({
         'th': 'downloaded',
-        'en': 'not_downloaded',
+        'en': 'downloading',
+        'thProgress': 100,
+        'enProgress': 65,
+        'enStage': 'กำลังดาวน์โหลดโมเดล English (2/2)...',
       });
 
       expect(status.isLanguageModelReady(TargetLanguage.thai), isTrue);
+      expect(status.progressForLanguage(TargetLanguage.thai), 100);
       expect(status.isLanguageModelReady(TargetLanguage.english), isFalse);
+      expect(status.progressForLanguage(TargetLanguage.english), 65);
+      expect(
+        status.stageForLanguage(TargetLanguage.english),
+        'กำลังดาวน์โหลดโมเดล English (2/2)...',
+      );
+    });
+
+    test('parses modelDownloadProgress event from TranslationManager', () {
+      final event = GameLingoNativeEvent.fromDynamic({
+        'event': 'modelDownloadProgress',
+        'data': {
+          'targetLanguage': 'th',
+          'progress': 74,
+          'state': 'downloading',
+          'stageMessage': 'กำลังดาวน์โหลดโมเดล Thai (ภาษาไทย) (2/2)...',
+        },
+        'timestamp': 1730000015000,
+      });
+
+      expect(event.type, GameLingoEventType.modelDownloadProgress);
+      expect(event.data['targetLanguage'], 'th');
+      expect(event.data['progress'], 74);
+      expect(event.data['state'], 'downloading');
     });
 
     test('parses bubbleStatusChanged event from FloatingBubbleService', () {
@@ -136,6 +163,28 @@ void main() {
 
       expect(cleaned, '勇者よ、目覚める時だ。\nステータスを確認しますか？');
       expect(JapaneseOcrTextProcessor.countJapaneseCharacters(cleaned), 21);
+
+      // Verify wrapped multi-line Japanese dialogue reconstruction & HUD noise removal:
+      final wrappedDialogue = JapaneseOcrTextProcessor.cleanAndMergeJapaneseLines([
+        'オート',
+        'スキップ',
+        '【アリス】',
+        'この先のダンジョンには強力な',
+        'モンスターが潜んでいるぞ。',
+      ]);
+      expect(
+        wrappedDialogue,
+        '【アリス】\nこの先のダンジョンには強力なモンスターが潜んでいるぞ。',
+      );
+
+      // Verify natural Thai gamer terminology refinement:
+      final naturalThai = JapaneseOcrTextProcessor.postProcessGamerTranslation(
+        'ผู้กล้าหาญได้รับคะแนนประสบการณ์ในคุกใต้ดินเพื่อปราบราชาปีศาจ',
+      );
+      expect(
+        naturalThai,
+        'ผู้กล้าได้รับค่าประสบการณ์ (EXP)ในดันเจี้ยนเพื่อปราบจอมมาร',
+      );
     });
 
     test('parses ocrCompleted event payload from JapaneseOcrManager', () {

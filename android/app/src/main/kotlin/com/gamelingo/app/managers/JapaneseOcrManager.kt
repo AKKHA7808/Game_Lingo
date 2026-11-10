@@ -304,7 +304,12 @@ class JapaneseOcrManager {
             }
         }
 
-        val combinedText = uniqueOrderedLines.joinToString(separator = "\n").trim()
+        // Filter HUD chrome noise (e.g. "オート", "スキップ", "ログ") when real dialogue exists
+        // and reconstruct wrapped dialogue sentences so SOV grammar stays intact.
+        val refinedLines = JapaneseGameTextRefiner.cleanAndReconstructDialogue(
+            uniqueOrderedLines.toList()
+        )
+        val combinedText = refinedLines.joinToString(separator = "\n").trim()
         val jpCharCount = countJapaneseCharacters(combinedText)
 
         if (combinedText.isEmpty() || jpCharCount == 0) {
@@ -322,7 +327,7 @@ class JapaneseOcrManager {
 
         return OcrRecognitionResult(
             extractedText = combinedText,
-            lineCount = uniqueOrderedLines.size,
+            lineCount = refinedLines.size,
             blockCount = japaneseBlockCount,
             japaneseCharCount = jpCharCount,
             processingTimeMs = elapsedMs,
@@ -331,10 +336,7 @@ class JapaneseOcrManager {
     }
 
     private fun normalizeSingleLine(rawLine: String): String {
-        return rawLine
-            .replace(Regex("[\\r\\n]+"), " ")
-            .replace(Regex("\\s{2,}"), " ")
-            .trim()
+        return JapaneseGameTextRefiner.normalizeOcrLine(rawLine)
     }
 
     private fun recycleBitmapsSafely(

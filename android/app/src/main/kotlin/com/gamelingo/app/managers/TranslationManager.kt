@@ -43,6 +43,49 @@ class TranslationManager {
     private val translators = ConcurrentHashMap<String, Translator>()
     private val downloadingStates = ConcurrentHashMap<String, Boolean>()
     private val failedStates = ConcurrentHashMap<String, Boolean>()
+    private val downloadProgressMap = ConcurrentHashMap<String, Int>()
+    private val downloadStageMap = ConcurrentHashMap<String, String>()
+    private val completionCallbacks =
+        ConcurrentHashMap<String, MutableList<(Boolean, String?) -> Unit>>()
+
+    @Volatile
+    var onProgressUpdateListener: ((
+        targetLang: String,
+        progress: Int,
+        state: String,
+        stageMessage: String,
+        errorMessage: String?
+    ) -> Unit)? = null
+
+    val isDownloadingAnyModel: Boolean
+        get() = downloadingStates.values.any { it }
+
+    @Synchronized
+    fun registerCompletionCallback(
+        targetLangCode: String,
+        callback: (Boolean, String?) -> Unit
+    ) {
+        val target = normalizeTargetLanguage(targetLangCode)
+        val list = completionCallbacks.getOrPut(target) { ArrayList() }
+        list.add(callback)
+    }
+
+    @Synchronized
+    private fun dispatchCompletionCallbacks(
+        targetLang: String,
+        success: Boolean,
+        errorMessage: String?
+    ) {
+        val callbacks = completionCallbacks.remove(targetLang)?.toList() ?: emptyList()
+        mainHandler.post {
+            for (cb in callbacks) {
+                try {
+                    cb.invoke(success, errorMessage)
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
 
     @Synchronized
     private fun ensureExecutor(): ExecutorService {
@@ -103,15 +146,33 @@ class TranslationManager {
                     else -> "not_downloaded"
                 }
 
+                val thProgress = when (thPairState) {
+                    "downloaded" -> 100
+                    "downloading" -> (downloadProgressMap[LANG_TH] ?: 5).coerceIn(1, 99)
+                    else -> 0
+                }
+
+                val enProgress = when (enPairState) {
+                    "downloaded" -> 100
+                    "downloading" -> (downloadProgressMap[LANG_EN] ?: 5).coerceIn(1, 99)
+                    else -> 0
+                }
+
                 val statusMap = mapOf<String, Any?>(
                     "th" to thPairState,
-                    "en" to enPairState
+                    "en" to enPairState,
+                    "thProgress" to thProgress,
+                    "enProgress" to enProgress,
+                    "thStage" to downloadStageMap[LANG_TH],
+                    "enStage" to downloadStageMap[LANG_EN]
                 )
                 mainHandler.post { onResult(statusMap) }
             } catch (e: Exception) {
                 val fallbackMap = mapOf<String, Any?>(
                     "th" to if (failedStates[LANG_TH] == true) "failed" else "not_downloaded",
                     "en" to if (failedStates[LANG_EN] == true) "failed" else "not_downloaded",
+                    "thProgress" to 0,
+                    "enProgress" to 0,
                     "errorMessage" to e.localizedMessage
                 )
                 mainHandler.post { onResult(fallbackMap) }
@@ -119,8 +180,43 @@ class TranslationManager {
         }
     }
 
+    private fun emitDownloadProgressEvent(
+        targetLang: String,
+        progress: Int,
+        state: String,
+        stageMessage: String,
+        errorMessage: String? = null
+    ) {
+        val clamped = progress.coerceIn(0, 100)
+        downloadProgressMap[targetLang] = clamped
+        downloadStageMap[targetLang] = stageMessage
+        NativeEventBridge.emit(
+            eventName = "modelDownloadProgress",
+            data = mapOf(
+                "targetLanguage" to targetLang,
+                "progress" to clamped,
+                "state" to state,
+                "stageMessage" to stageMessage
+            ),
+            errorMessage = errorMessage
+        )
+        mainHandler.post {
+            try {
+                onProgressUpdateListener?.invoke(
+                    targetLang,
+                    clamped,
+                    state,
+                    stageMessage,
+                    errorMessage
+                )
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     /**
-     * Downloads the required on-device ML Kit models (`ja` + [targetLangCode]).
+     * Downloads the required on-device ML Kit models (`ja` + [targetLangCode]) and emits
+     * real-time percentage progress (`0%` -> `100%`) over the native EventChannel.
      * Requires Wi-Fi by default unless [allowCellular] is true.
      * Never reports success unless `downloadModelIfNeeded` completes AND `RemoteModelManager`
      * verifies the models exist on disk.
@@ -131,13 +227,31 @@ class TranslationManager {
         onComplete: (Boolean, String?) -> Unit
     ) {
         val target = normalizeTargetLanguage(targetLangCode)
+        registerCompletionCallback(target, onComplete)
+
         if (downloadingStates[target] == true) {
-            onComplete(false, "กำลังดาวน์โหลดโมเดลภาษานี้อยู่แล้ว กรุณารอสักครู่")
+            // Download is already running in background; callback is attached and will be notified when done.
+            val currentProg = (downloadProgressMap[target] ?: 10).coerceIn(1, 99)
+            val currentStage = downloadStageMap[target] ?: "กำลังดาวน์โหลดโมเดลในพื้นหลัง..."
+            emitDownloadProgressEvent(
+                targetLang = target,
+                progress = currentProg,
+                state = "downloading",
+                stageMessage = currentStage
+            )
             return
         }
 
         downloadingStates[target] = true
         failedStates[target] = false
+        val targetDisplayName = if (target == LANG_TH) "Thai (ภาษาไทย)" else "English (ภาษาอังกฤษ)"
+
+        emitDownloadProgressEvent(
+            targetLang = target,
+            progress = 2,
+            state = "downloading",
+            stageMessage = "กำลังตรวจสอบไฟล์โมเดลในเครื่อง..."
+        )
 
         val conditionsBuilder = DownloadConditions.Builder()
         if (!allowCellular) {
@@ -145,43 +259,137 @@ class TranslationManager {
         }
         val conditions = conditionsBuilder.build()
 
-        val translator = getOrCreateTranslator(target)
-        translator.downloadModelIfNeeded(conditions)
-            .addOnSuccessListener {
-                // Verify with RemoteModelManager that both source (ja) and target models are truly present.
-                ensureExecutor().execute {
-                    try {
-                        val jaModel = TranslateRemoteModel.Builder(LANG_JA).build()
-                        val targetModel = TranslateRemoteModel.Builder(target).build()
-                        val jaReady = Tasks.await(modelManager.isModelDownloaded(jaModel))
-                        val targetReady = Tasks.await(modelManager.isModelDownloaded(targetModel))
+        ensureExecutor().execute {
+            var tickerRunning = true
+            var minRange = 5
+            var maxRange = 48
+            var currentSimulated = 5
+            var currentStageText = "กำลังดาวน์โหลดโมเดลภาษาญี่ปุ่น (1/2)..."
 
-                        downloadingStates[target] = false
-                        if (jaReady && targetReady) {
-                            failedStates[target] = false
-                            mainHandler.post { onComplete(true, null) }
-                        } else {
-                            failedStates[target] = true
-                            mainHandler.post {
-                                onComplete(
-                                    false,
-                                    "ระบบยังติดตั้งไฟล์โมเดลแปลภาษาไม่ครบถ้วน กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่"
-                                )
-                            }
-                        }
-                    } catch (e: Exception) {
-                        downloadingStates[target] = false
-                        failedStates[target] = true
-                        mainHandler.post {
-                            onComplete(
-                                false,
-                                "เกิดข้อผิดพลาดในการตรวจสอบไฟล์โมเดลหลังดาวน์โหลด: ${e.localizedMessage}"
-                            )
-                        }
+            val progressRunnable = object : Runnable {
+                override fun run() {
+                    if (!tickerRunning || downloadingStates[target] != true) return
+                    if (currentSimulated < maxRange) {
+                        val step = if (currentSimulated < (minRange + maxRange) / 2) 3 else 1
+                        currentSimulated = (currentSimulated + step).coerceAtMost(maxRange)
                     }
+                    emitDownloadProgressEvent(
+                        targetLang = target,
+                        progress = currentSimulated,
+                        state = "downloading",
+                        stageMessage = currentStageText
+                    )
+                    mainHandler.postDelayed(this, 320L)
                 }
             }
-            .addOnFailureListener { e ->
+
+            try {
+                val jaModel = TranslateRemoteModel.Builder(LANG_JA).build()
+                val targetModel = TranslateRemoteModel.Builder(target).build()
+
+                val jaAlreadyDownloaded = Tasks.await(modelManager.isModelDownloaded(jaModel))
+                val targetAlreadyDownloaded = Tasks.await(modelManager.isModelDownloaded(targetModel))
+
+                if (jaAlreadyDownloaded && targetAlreadyDownloaded) {
+                    tickerRunning = false
+                    downloadingStates[target] = false
+                    failedStates[target] = false
+                    emitDownloadProgressEvent(
+                        targetLang = target,
+                        progress = 100,
+                        state = "downloaded",
+                        stageMessage = "ดาวน์โหลดโมเดลครบถ้วน 100%"
+                    )
+                    dispatchCompletionCallbacks(target, true, null)
+                    return@execute
+                }
+
+                // Start smooth progress ticker on mainHandler while ML Kit downloads in background.
+                if (!jaAlreadyDownloaded) {
+                    minRange = 5
+                    maxRange = 48
+                    currentSimulated = 6
+                    currentStageText = "กำลังดาวน์โหลดโมเดล Japanese (1/2)..."
+                } else {
+                    minRange = 15
+                    maxRange = 90
+                    currentSimulated = 18
+                    currentStageText = "กำลังดาวน์โหลดโมเดล $targetDisplayName..."
+                }
+                mainHandler.post(progressRunnable)
+
+                // Step 1: Download Japanese source model if not yet on device.
+                if (!jaAlreadyDownloaded) {
+                    Tasks.await(modelManager.download(jaModel, conditions))
+                }
+
+                // Transition to Step 2: Download target language model (Thai or English).
+                minRange = 52
+                maxRange = 92
+                currentSimulated = maxOf(currentSimulated, 52)
+                currentStageText = if (!jaAlreadyDownloaded) {
+                    "กำลังดาวน์โหลดโมเดล $targetDisplayName (2/2)..."
+                } else {
+                    "กำลังดาวน์โหลดโมเดล $targetDisplayName..."
+                }
+                emitDownloadProgressEvent(
+                    targetLang = target,
+                    progress = currentSimulated,
+                    state = "downloading",
+                    stageMessage = currentStageText
+                )
+
+                if (!targetAlreadyDownloaded) {
+                    Tasks.await(modelManager.download(targetModel, conditions))
+                }
+
+                // Step 3: Ensure Translator pipeline (including pivot bridge if needed) is ready.
+                minRange = 93
+                maxRange = 98
+                currentSimulated = 95
+                currentStageText = "กำลังตรวจสอบความสมบูรณ์ของโมเดล..."
+                emitDownloadProgressEvent(
+                    targetLang = target,
+                    progress = 95,
+                    state = "downloading",
+                    stageMessage = currentStageText
+                )
+
+                val translator = getOrCreateTranslator(target)
+                Tasks.await(translator.downloadModelIfNeeded(conditions))
+
+                val jaReady = Tasks.await(modelManager.isModelDownloaded(jaModel))
+                val targetReady = Tasks.await(modelManager.isModelDownloaded(targetModel))
+
+                tickerRunning = false
+                mainHandler.removeCallbacks(progressRunnable)
+                downloadingStates[target] = false
+
+                if (jaReady && targetReady) {
+                    failedStates[target] = false
+                    emitDownloadProgressEvent(
+                        targetLang = target,
+                        progress = 100,
+                        state = "downloaded",
+                        stageMessage = "ดาวน์โหลดสำเร็จ (100%)"
+                    )
+                    dispatchCompletionCallbacks(target, true, null)
+                } else {
+                    failedStates[target] = true
+                    val errMsg =
+                        "ระบบยังติดตั้งไฟล์โมเดลแปลภาษาไม่ครบถ้วน กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่"
+                    emitDownloadProgressEvent(
+                        targetLang = target,
+                        progress = 0,
+                        state = "failed",
+                        stageMessage = "ดาวน์โหลดไม่สำเร็จ",
+                        errorMessage = errMsg
+                    )
+                    dispatchCompletionCallbacks(target, false, errMsg)
+                }
+            } catch (e: Exception) {
+                tickerRunning = false
+                mainHandler.removeCallbacks(progressRunnable)
                 downloadingStates[target] = false
                 failedStates[target] = true
                 val message = if (!allowCellular) {
@@ -189,8 +397,16 @@ class TranslationManager {
                 } else {
                     "ดาวน์โหลดโมเดลแปลภาษาไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต (${e.localizedMessage})"
                 }
-                mainHandler.post { onComplete(false, message) }
+                emitDownloadProgressEvent(
+                    targetLang = target,
+                    progress = 0,
+                    state = "failed",
+                    stageMessage = "ดาวน์โหลดล้มเหลว",
+                    errorMessage = message
+                )
+                dispatchCompletionCallbacks(target, false, message)
             }
+        }
     }
 
     /**
@@ -261,15 +477,25 @@ class TranslationManager {
                     return@execute
                 }
 
-                // Step 2: Translate line-by-line or full block using the cached on-device Translator.
+                // Step 2: Reconstruct wrapped Japanese dialogue sentences, normalize colloquial/role-language
+                // suffixes for NMT accuracy, translate via the cached on-device Translator, and polish output.
                 val translator = getOrCreateTranslator(target)
-                val lines = cleanedInput.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
-                val translatedLines = ArrayList<String>(lines.size)
+                val rawLines = cleanedInput.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                val sentences = JapaneseGameTextRefiner.cleanAndReconstructDialogue(rawLines)
+                    .ifEmpty { rawLines }
+                val translatedLines = ArrayList<String>(sentences.size)
 
-                for (line in lines) {
-                    val translatedLine = Tasks.await(translator.translate(line))
+                for (sentence in sentences) {
+                    val preparedInput = JapaneseGameTextRefiner.prepareJapaneseForTranslation(sentence)
+                    val translatedLine = Tasks.await(translator.translate(preparedInput))
                     if (!translatedLine.isNullOrBlank()) {
-                        translatedLines.add(translatedLine.trim())
+                        val polished = JapaneseGameTextRefiner.postProcessTranslation(
+                            translatedLine,
+                            target
+                        )
+                        if (polished.isNotBlank()) {
+                            translatedLines.add(polished)
+                        }
                     }
                 }
 

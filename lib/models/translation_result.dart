@@ -90,25 +90,105 @@ class JapaneseOcrTextProcessor {
     return _japaneseScriptRegex.allMatches(text).length;
   }
 
-  /// Filters out blank lines, non-Japanese noise lines, and duplicate lines while
-  /// preserving reading order.
+  /// Filters out blank lines, non-Japanese noise lines, HUD control labels, and duplicate lines
+  /// while merging wrapped dialogue lines into natural sentences.
   static String cleanAndMergeJapaneseLines(List<String> rawLines) {
     final seen = <String>{};
-    final result = <String>[];
+    final cleaned = <String>[];
+
+    const hudLabels = {
+      'オート',
+      'スキップ',
+      'バックログ',
+      'ログ',
+      'メニュー',
+      'ヒストリー',
+      'AUTO',
+      'SKIP',
+      'LOG',
+      'MENU',
+    };
 
     for (final raw in rawLines) {
-      final normalized = raw
+      var normalized = raw
           .replaceAll(RegExp(r'[\r\n]+'), ' ')
+          .replaceAll('　', ' ')
           .replaceAll(RegExp(r'\s{2,}'), ' ')
           .trim();
+      // Remove accidental intra-Japanese OCR spaces
+      normalized = normalized.replaceAllMapped(
+        RegExp(
+          r'([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])\s+([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])',
+        ),
+        (m) => '${m[1]}${m[2]}',
+      );
       if (normalized.isNotEmpty &&
           containsJapaneseScript(normalized) &&
           seen.add(normalized)) {
-        result.add(normalized);
+        cleaned.add(normalized);
       }
     }
 
-    return result.join('\n');
+    final nonHud = cleaned
+        .where((line) => !hudLabels.contains(line.toUpperCase()))
+        .toList();
+    final effective = nonHud.isNotEmpty ? nonHud : cleaned;
+
+    return mergeWrappedJapaneseDialogue(effective).join('\n');
+  }
+
+  /// Merges multi-line wrapped Japanese sentences (lines that do not end with terminal punctuation)
+  /// so SOV grammar is preserved as a single complete sentence.
+  static List<String> mergeWrappedJapaneseDialogue(List<String> lines) {
+    if (lines.length <= 1) return lines;
+    const terminators = {'。', '！', '!', '？', '?', '」', '』', '】', '…', '♪'};
+    final result = <String>[];
+    final buffer = StringBuffer();
+
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i].trim();
+      if (line.isEmpty) continue;
+
+      if (line.startsWith('【') && line.endsWith('】')) {
+        if (buffer.isNotEmpty) {
+          result.add(buffer.toString());
+          buffer.clear();
+        }
+        result.add(line);
+        continue;
+      }
+
+      buffer.write(line);
+      final lastChar = line.substring(line.length - 1);
+      final isTerminated = terminators.contains(lastChar);
+      if (isTerminated) {
+        result.add(buffer.toString());
+        buffer.clear();
+      }
+    }
+
+    if (buffer.isNotEmpty) {
+      result.add(buffer.toString());
+    }
+    return result;
+  }
+
+  /// Polishes raw Thai or English output into natural gaming terminology.
+  static String postProcessGamerTranslation(
+    String rawTranslated, {
+    String targetLanguage = 'th',
+  }) {
+    var text = rawTranslated.trim();
+    if (text.isEmpty) return text;
+    if (targetLanguage == 'th') {
+      text = text
+          .replaceAll('คุกใต้ดิน', 'ดันเจี้ยน')
+          .replaceAll('ความเสียหายวิกฤต', 'ดาเมจคริติคอล')
+          .replaceAll('ผู้กล้าหาญ', 'ผู้กล้า')
+          .replaceAll('ราชาปีศาจ', 'จอมมาร')
+          .replaceAll('คะแนนประสบการณ์', 'ค่าประสบการณ์ (EXP)');
+    }
+    return text;
   }
 }
 

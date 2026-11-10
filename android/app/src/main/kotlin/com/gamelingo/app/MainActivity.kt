@@ -15,6 +15,7 @@ import com.gamelingo.app.managers.TranslationPipelineCoordinator
 import com.gamelingo.app.services.FloatingBubbleService
 import com.gamelingo.app.services.FloatingPanelService
 import com.gamelingo.app.services.MediaProjectionService
+import com.gamelingo.app.services.ModelDownloadService
 import com.gamelingo.app.services.NativeEventBridge
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -204,12 +205,14 @@ class MainActivity : FlutterActivity() {
                 }
             }
             "downloadTranslationModel" -> {
+                requestNotificationPermissionIfNeeded()
                 val targetLang = call.argument<String>("targetLanguage")
                     ?: TranslationPipelineCoordinator.getTargetLanguage(this)
                 val allowCellular = call.argument<Boolean>("allowCellular") ?: false
-                TranslationPipelineCoordinator.translationManager.downloadModel(
-                    targetLang,
-                    allowCellular
+                ModelDownloadService.startBackgroundDownload(
+                    context = applicationContext,
+                    targetLanguage = targetLang,
+                    allowCellular = allowCellular
                 ) { success, errorMessage ->
                     if (success) {
                         result.success(true)
